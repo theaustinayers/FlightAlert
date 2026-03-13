@@ -12,9 +12,13 @@ A full-featured Discord bot that monitors live ADSB aircraft data for emergency 
 - **Dual squawk code support**:
   - **7500**: Aircraft hijacking alert
   - **7700**: General emergency alert
-- **Extra aircraft tracking**: Monitor specific aircraft by hex code
+- **Extra aircraft tracking**: Monitor specific aircraft by HEX code or registration
+  - Auto-detects HEX (6 hex characters) vs REG (tail number/registration)
+  - Uses dedicated `/reg/{registration}` API for efficient registration lookups
   - Posts when aircraft comes online
   - Resets when aircraft goes offline (allowing re-alerting if it comes back)
+  - Includes tracking reason/comment in alert embeds
+  - Managed via `/flights track` admin commands or `extra.conf` file
 - **Custom API forwarding**: Forward all aircraft data to any HTTP server via api.conf
 - **Duplicate prevention**: Suppresses duplicate alerts for the same aircraft within a 60-minute window
 - **Rich Discord embeds** with aircraft information including:
@@ -75,14 +79,23 @@ const WEBHOOKS = {
 
 ### Extra Aircraft Tracking (extra.conf)
 
-Track specific aircraft by their hex code. Edit `extra.conf`:
+Track specific aircraft by their HEX code or registration/tail number. The bot auto-detects the type:
+- **HEX**: 6 hex characters (0-9, a-f) - queries all aircraft list
+- **REG**: Registration/tail number (N1234AB, G-ABCD, 92-3292) - uses dedicated API endpoint
+
+Edit `extra.conf`:
 
 ```json
 {
-    "c07c7b": "https://discordapp.com/api/webhooks/YOUR_WEBHOOK_HERE",
-    "a12ff9": "https://discordapp.com/api/webhooks/ANOTHER_WEBHOOK_HERE"
+    "c07c7b": { "webhook": "https://discordapp.com/api/webhooks/...", "comment": "CEO's aircraft", "type": "hex" },
+    "N1234AB": { "webhook": "https://discordapp.com/api/webhooks/...", "comment": "VIP transport", "type": "reg" },
+    "G-ABCD": { "webhook": "https://discordapp.com/api/webhooks/...", "comment": "UK registered", "type": "reg" }
 }
 ```
+
+The `type` field is optional and auto-detected, but you can specify it explicitly.
+
+You can also manage tracked aircraft using the `/flights track add` and `/flights track remove` commands.
 
 ### Custom API Forwarding (api.conf)
 
@@ -95,6 +108,24 @@ http://localhost:3000/adsb
 ```
 
 The bot will POST aircraft data to these endpoints with timestamp and aircraft information.
+
+You can also manage API endpoints using the `/flights relay add` and `/flights relay remove` commands.
+
+### Admin Role Management (admin_roles.conf)
+
+Control which Discord roles can use flight management commands. Edit `admin_roles.conf` and add one role ID per line:
+
+```
+123456789012345678
+987654321098765432
+```
+
+To get a role ID:
+1. Right-click the role in Discord
+2. Select "Copy Role ID"
+3. Paste it in `admin_roles.conf`
+
+**Note:** Guild administrators can dynamically manage admin roles using `/flights admin add` and `/flights admin remove` commands without editing files.
 
 ### Settings
 
@@ -130,6 +161,58 @@ Shows a summary embed with:
 - Count of 7500 hijack alerts
 - Count of 7700 emergency alerts
 - List of extra tracked aircraft currently online
+
+### `/flights` - Admin Flight Management
+**Requires Admin Role** - Manage tracked aircraft and API relay endpoints. Only guild administrators can add/remove admin roles.
+
+#### Admin Role Management (Guild Admin Only):
+
+##### `/flights admin add`
+Add a Discord role that can access flight management commands.
+- **role** (required) - Discord role to add as admin
+
+Example: `/flights admin add role:@FlightOps`
+
+##### `/flights admin remove`
+Remove a Discord role from flight management access.
+- **role** (required) - Discord role to remove from admin
+
+Example: `/flights admin remove role:@FlightOps`
+
+#### Track Management (Admin Role Required):
+
+##### `/flights track add`
+Add a new aircraft to track by HEX or registration.
+- **identifier** (required) - Aircraft HEX code (e.g., c07c7b) or registration (e.g., N1234AB, G-ABCD, 92-3292)
+- **comment** (required) - Reason for tracking (e.g., "CEO's aircraft")
+- **webhook** (required) - Discord webhook URL for alerts
+
+Examples:
+- `/flights track add identifier:c07c7b comment:CEO aircraft webhook:https://...`
+- `/flights track add identifier:N1234AB comment:VIP transport webhook:https://...`
+- `/flights track add identifier:G-ABCD comment:UK registered webhook:https://...`
+
+##### `/flights track remove`
+Remove an aircraft from tracking.
+- **identifier** (required) - Aircraft HEX code or registration (same as when added)
+
+Examples:
+- `/flights track remove identifier:c07c7b`
+- `/flights track remove identifier:N1234AB`
+
+#### API Relay Management (Admin Role Required):
+
+##### `/flights relay add`
+Add a new API endpoint to forward aircraft data.
+- **url** (required) - API endpoint URL (must start with http:// or https://)
+
+Example: `/flights relay add url:https://your-api.example.com/aircraft`
+
+##### `/flights relay remove`
+Remove an API endpoint from the relay list.
+- **url** (required) - API endpoint URL to remove
+
+Example: `/flights relay remove url:https://your-api.example.com/aircraft`
 
 ## ADSB Data Source
 
@@ -193,19 +276,21 @@ To deploy on a Pterodactyl Panel:
    ```
 4. Configure `extra.conf` for tracked aircraft (if needed)
 5. Configure `api.conf` for custom API endpoints (if needed)
-6. Set the startup command: `npm start`
-7. In the console, run: `npm install`
-8. Invite the bot to your Discord server using OAuth2 URL
-9. Start the server
+6. Configure `admin_roles.conf` with admin role IDs (or use `/flights admin add` in Discord)
+7. Set the startup command: `npm start`
+8. In the console, run: `npm install`
+9. Invite the bot to your Discord server using OAuth2 URL
+10. Start the server
 
 ## Project Structure
 
 ```
 FlightAlert/
 ├── bot.js              # Main bot logic with Discord integration
-├── config.js           # Configuration (webhooks, API endpoints)
-├── extra.conf          # Extra aircraft tracking configuration (hex: webhook)
+├── config.js           # Configuration (webhooks, API endpoints, admin roles)
+├── extra.conf          # Extra aircraft tracking (HEX or REG: webhook + comment)
 ├── api.conf            # Custom API endpoint configuration (one URL per line)
+├── admin_roles.conf    # Admin role IDs for flight commands (one ID per line)
 ├── .env.example        # Environment variables template
 ├── package.json        # Node.js dependencies
 └── README.md           # This file

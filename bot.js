@@ -109,11 +109,15 @@ function createEmergencyEmbed(title, aircraftData) {
 /**
  * Create Discord embed for extra tracked aircraft
  */
-function createExtraAircraftEmbed(aircraftData) {
+function createExtraAircraftEmbed(aircraftData, comment) {
   const embed = new EmbedBuilder()
     .setTitle('AIRCRAFT ONLINE')
     .setDescription('Tracked aircraft is now online!')
     .setColor(0x00FF00); // Green for online
+
+  if (comment) {
+    embed.addFields({ name: 'Reason', value: comment, inline: false });
+  }
 
   if (aircraftData.flight !== 'N/A') {
     embed.addFields({ name: 'Flight Number', value: aircraftData.flight, inline: false });
@@ -238,12 +242,27 @@ async function fetchAllAircraft() {
 }
 
 /**
+ * Fetch aircraft by registration from ADSB API
+ */
+async function fetchAircraftByRegistration(registration) {
+  try {
+    const endpoint = `https://api.adsb.lol/v2/reg/${registration}`;
+    const response = await axios.get(endpoint, { timeout: 10000 });
+    
+    return response.data.ac || [];
+  } catch (error) {
+    console.error(`[ERROR] Failed to fetch aircraft by registration ${registration}: ${error.message}`);
+    return [];
+  }
+}
+
+/**
  * Post extra tracked aircraft data to Discord webhook
  */
-async function postExtraAircraftAlert(hexId, aircraft, webhookUrl) {
+async function postExtraAircraftAlert(hexId, aircraft, webhookUrl, comment) {
   try {
     const aircraftDataFormatted = formatAircraftData(aircraft);
-    const embed = createExtraAircraftEmbed(aircraftDataFormatted);
+    const embed = createExtraAircraftEmbed(aircraftDataFormatted, comment);
     
     await axios.post(webhookUrl, {
       embeds: [embed.toJSON()],
@@ -255,45 +274,75 @@ async function postExtraAircraftAlert(hexId, aircraft, webhookUrl) {
 }
 
 /**
+ * Detect if a string is a HEX code or registration
+ */
+function detectAircraftType(value) {
+  // HEX: 6 hex characters (0-9, a-f)
+  if (/^[0-9a-f]{6}$/i.test(value)) {
+    return 'hex';
+  }
+  // REG: registration/tail number
+  return 'reg';
+}
+
+/**
  * Check if extra tracked aircraft are online and post alerts
  */
 async function checkExtraTrackedAircraft() {
   const trackedAircraft = config.EXTRA_TRACKED_AIRCRAFT;
   if (Object.keys(trackedAircraft).length === 0) return;
   
-  const aircraftList = await fetchAllAircraft();
-  const onlineHexes = new Set(
-    aircraftList
-      .filter((a) => a.hex)
-      .map((a) => a.hex.toLowerCase())
-  );
-  
   // Store extra aircraft data
   aircraftData.extra = {};
   
   // Check each tracked aircraft
-  for (const [hexId, webhookUrl] of Object.entries(trackedAircraft)) {
-    const hexIdLower = hexId.toLowerCase();
+  for (const [identifier, config_value] of Object.entries(trackedAircraft)) {
+    // Handle both old format (string) and new format (object)
+    const isNewFormat = typeof config_value === 'object' && config_value !== null;
+    const webhookUrl = isNewFormat ? config_value.webhook : config_value;
+    const comment = isNewFormat ? config_value.comment : null;
+    const trackType = isNewFormat ? (config_value.type || detectAircraftType(identifier)) : detectAircraftType(identifier);
     
-    if (onlineHexes.has(hexIdLower)) {
+    // Fetch aircraft based on type
+    let aircraftList = [];
+    if (trackType === 'hex') {
+      // For HEX, search through all aircraft
+      aircraftList = await fetchAllAircraft();
+    } else {
+      // For REG, use dedicated API endpoint
+      aircraftList = await fetchAircraftByRegistration(identifier);
+    }
+    
+    // Find matching aircraft
+    let matchedAircraft = null;
+    const identifierLower = identifier.toLowerCase();
+    
+    if (trackType === 'hex') {
+      // Search by HEX code
+      matchedAircraft = aircraftList.find((a) => a.hex && a.hex.toLowerCase() === identifierLower);
+    } else {
+      // For registration, the API returns directly, so use first result
+      if (aircraftList.length > 0) {
+        matchedAircraft = aircraftList[0];
+      }
+    }
+    
+    if (matchedAircraft) {
       // Aircraft is online
-      const aircraft = aircraftList.find((a) => a.hex && a.hex.toLowerCase() === hexIdLower);
-      if (aircraft) {
-        aircraftData.extra[hexId] = aircraft;
-        
-        if (!(hexIdLower in extraAircraftOnline)) {
-          // Aircraft just came online - post alert
-          console.log(`[INFO] Extra tracked aircraft ${hexId} came online`);
-          await postExtraAircraftAlert(hexId, aircraft, webhookUrl);
-          extraAircraftOnline[hexIdLower] = true;
-        }
+      aircraftData.extra[identifier] = matchedAircraft;
+      
+      if (!(identifierLower in extraAircraftOnline)) {
+        // Aircraft just came online - post alert
+        console.log(`[INFO] Extra tracked aircraft ${identifier} (${trackType}) came online`);
+        await postExtraAircraftAlert(identifier, matchedAircraft, webhookUrl, comment);
+        extraAircraftOnline[identifierLower] = true;
       }
     } else {
       // Aircraft is offline
-      if (hexIdLower in extraAircraftOnline) {
+      if (identifierLower in extraAircraftOnline) {
         // Aircraft just went offline - reset the timer
-        console.log(`[INFO] Extra tracked aircraft ${hexId} went offline - timer reset`);
-        delete extraAircraftOnline[hexIdLower];
+        console.log(`[INFO] Extra tracked aircraft ${identifier} went offline - timer reset`);
+        delete extraAircraftOnline[identifierLower];
       }
     }
   }
@@ -339,6 +388,29 @@ client.once('ready', () => {
   console.log(`[INFO] Monitoring ${Object.keys(config.EXTRA_TRACKED_AIRCRAFT).length} extra aircraft`);
 });
 
+/**
+ * Check if user has any of the authorized admin roles
+ */
+function userHasAdminRole(member) {
+  if (!member) return false;
+  
+  // If no admin roles configured, deny access
+  if (config.ADMIN_ROLES.length === 0) {
+    return false;
+  }
+  
+  // Check if user has any of the admin roles
+  return member.roles.cache.some((role) => config.ADMIN_ROLES.includes(role.id));
+}
+
+/**
+ * Check if user is guild admin (for managing admin roles)
+ */
+function userIsGuildAdmin(member) {
+  if (!member) return false;
+  return member.permissions.has('ADMINISTRATOR');
+}
+
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -382,6 +454,157 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       await interaction.reply({ embeds: [embed], ephemeral: false });
+    } else if (interaction.commandName === 'flights') {
+      const subcommandGroup = interaction.options.getSubcommandGroup();
+      const subcommand = interaction.options.getSubcommand();
+
+      // Admin role management - requires guild admin
+      if (subcommandGroup === 'admin') {
+        if (!userIsGuildAdmin(interaction.member)) {
+          await interaction.reply({
+            content: '❌ You need administrator permissions to manage admin roles.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (subcommand === 'add') {
+          const role = interaction.options.getRole('role');
+
+          if (config.ADMIN_ROLES.includes(role.id)) {
+            await interaction.reply({
+              content: `⚠️ Role <@&${role.id}> is already an admin role.`,
+              ephemeral: true,
+            });
+            return;
+          }
+
+          config.ADMIN_ROLES.push(role.id);
+          config.saveAdminRoles();
+
+          await interaction.reply({
+            content: `✅ Role <@&${role.id}> added as admin role.`,
+            ephemeral: true,
+          });
+          console.log(`[INFO] Admin role added: ${role.id} (${role.name})`);
+        } else if (subcommand === 'remove') {
+          const role = interaction.options.getRole('role');
+
+          const index = config.ADMIN_ROLES.indexOf(role.id);
+          if (index === -1) {
+            await interaction.reply({
+              content: `⚠️ Role <@&${role.id}> is not an admin role.`,
+              ephemeral: true,
+            });
+            return;
+          }
+
+          config.ADMIN_ROLES.splice(index, 1);
+          config.saveAdminRoles();
+
+          await interaction.reply({
+            content: `✅ Role <@&${role.id}> removed as admin role.`,
+            ephemeral: true,
+          });
+          console.log(`[INFO] Admin role removed: ${role.id} (${role.name})`);
+        }
+        return;
+      }
+
+      // Flight management - requires admin role
+      if (!userHasAdminRole(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You need an admin role to use this command. Ask an administrator to add your role with `/flights admin add`.',
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (subcommandGroup === 'track') {
+        if (subcommand === 'add') {
+          const identifier = interaction.options.getString('identifier').toLowerCase();
+          const comment = interaction.options.getString('comment');
+          const webhook = interaction.options.getString('webhook');
+          const trackType = detectAircraftType(identifier);
+
+          if (config.EXTRA_TRACKED_AIRCRAFT[identifier]) {
+            await interaction.reply({
+              content: `⚠️ Aircraft **${identifier}** is already being tracked.`,
+              ephemeral: true,
+            });
+            return;
+          }
+
+          config.EXTRA_TRACKED_AIRCRAFT[identifier] = { webhook, comment, type: trackType };
+          config.saveExtraConfig();
+
+          await interaction.reply({
+            content: `✅ Aircraft **${identifier}** (type: ${trackType.toUpperCase()}) added to tracking list.\n**Comment:** ${comment}`,
+            ephemeral: true,
+          });
+          console.log(`[INFO] Admin added tracked aircraft: ${identifier} (${trackType})`);
+        } else if (subcommand === 'remove') {
+          const identifier = interaction.options.getString('identifier').toLowerCase();
+
+          if (!config.EXTRA_TRACKED_AIRCRAFT[identifier]) {
+            await interaction.reply({
+              content: `⚠️ Aircraft **${identifier}** is not in the tracking list.`,
+              ephemeral: true,
+            });
+            return;
+          }
+
+          delete config.EXTRA_TRACKED_AIRCRAFT[identifier];
+          config.saveExtraConfig();
+
+          await interaction.reply({
+            content: `✅ Aircraft **${identifier}** removed from tracking list.`,
+            ephemeral: true,
+          });
+          console.log(`[INFO] Admin removed tracked aircraft: ${identifier}`);
+        }
+      } else if (subcommandGroup === 'relay') {
+        if (subcommand === 'add') {
+          const url = interaction.options.getString('url');
+
+          if (config.CUSTOM_API_ENDPOINTS.includes(url)) {
+            await interaction.reply({
+              content: `⚠️ API endpoint **${url}** is already configured.`,
+              ephemeral: true,
+            });
+            return;
+          }
+
+          config.CUSTOM_API_ENDPOINTS.push(url);
+          config.saveApiEndpoints();
+
+          await interaction.reply({
+            content: `✅ API endpoint added: **${url}**`,
+            ephemeral: true,
+          });
+          console.log(`[INFO] Admin added API endpoint: ${url}`);
+        } else if (subcommand === 'remove') {
+          const url = interaction.options.getString('url');
+
+          const index = config.CUSTOM_API_ENDPOINTS.indexOf(url);
+          if (index === -1) {
+            await interaction.reply({
+              content: `⚠️ API endpoint **${url}** is not configured.`,
+              ephemeral: true,
+            });
+            return;
+          }
+
+          config.CUSTOM_API_ENDPOINTS.splice(index, 1);
+          config.saveApiEndpoints();
+
+          await interaction.reply({
+            content: `✅ API endpoint removed: **${url}**`,
+            ephemeral: true,
+          });
+          console.log(`[INFO] Admin removed API endpoint: ${url}`);
+        }
+      }
     }
   } catch (error) {
     console.error(`[ERROR] Command error: ${error.message}`);
@@ -404,6 +627,102 @@ async function registerCommands() {
       new SlashCommandBuilder()
         .setName('trackall')
         .setDescription('View all tracked aircraft (7500, 7700, and extra tracked)'),
+      new SlashCommandBuilder()
+        .setName('flights')
+        .setDescription('Admin: Manage tracked aircraft and API relays')
+        .addSubcommandGroup((group) =>
+          group
+            .setName('admin')
+            .setDescription('Manage admin roles for flight commands')
+            .addSubcommand((subcommand) =>
+              subcommand
+                .setName('add')
+                .setDescription('Add a role as admin for flight commands')
+                .addRoleOption((option) =>
+                  option
+                    .setName('role')
+                    .setDescription('Discord role to add as admin')
+                    .setRequired(true)
+                )
+            )
+            .addSubcommand((subcommand) =>
+              subcommand
+                .setName('remove')
+                .setDescription('Remove a role from admin access')
+                .addRoleOption((option) =>
+                  option
+                    .setName('role')
+                    .setDescription('Discord role to remove from admin')
+                    .setRequired(true)
+                )
+            )
+        )
+        .addSubcommandGroup((group) =>
+          group
+            .setName('track')
+            .setDescription('Manage tracked aircraft')
+            .addSubcommand((subcommand) =>
+              subcommand
+                .setName('add')
+                .setDescription('Add an aircraft to track by HEX or registration')
+                .addStringOption((option) =>
+                  option
+                    .setName('identifier')
+                    .setDescription('HEX code (e.g., c07c7b) or registration (e.g., N1234AB, G-ABCD)')
+                    .setRequired(true)
+                )
+                .addStringOption((option) =>
+                  option
+                    .setName('comment')
+                    .setDescription('Reason for tracking (e.g., CEO aircraft)')
+                    .setRequired(true)
+                )
+                .addStringOption((option) =>
+                  option
+                    .setName('webhook')
+                    .setDescription('Discord webhook URL for alerts')
+                    .setRequired(true)
+                )
+            )
+            .addSubcommand((subcommand) =>
+              subcommand
+                .setName('remove')
+                .setDescription('Remove an aircraft from tracking')
+                .addStringOption((option) =>
+                  option
+                    .setName('identifier')
+                    .setDescription('HEX code or registration (same as when added)')
+                    .setRequired(true)
+                )
+            )
+        )
+        .addSubcommandGroup((group) =>
+          group
+            .setName('relay')
+            .setDescription('Manage API relay endpoints')
+            .addSubcommand((subcommand) =>
+              subcommand
+                .setName('add')
+                .setDescription('Add an API endpoint for data forwarding')
+                .addStringOption((option) =>
+                  option
+                    .setName('url')
+                    .setDescription('API endpoint URL (https://...)')
+                    .setRequired(true)
+                )
+            )
+            .addSubcommand((subcommand) =>
+              subcommand
+                .setName('remove')
+                .setDescription('Remove an API endpoint')
+                .addStringOption((option) =>
+                  option
+                    .setName('url')
+                    .setDescription('API endpoint URL to remove')
+                    .setRequired(true)
+                )
+            )
+        )
     ];
 
     await client.application.commands.set(commands);
