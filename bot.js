@@ -1,16 +1,32 @@
 /**
  * FlightAlert Discord Bot
- * Monitors ADSB aircraft emergency signals (7500 hijack, 7700 emergency) and posts to Discord webhooks
+ * Monitors ADSB aircraft emergency signals and provides Discord bot commands
  */
 
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 const config = require('./config');
+
+// Initialize Discord client
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+  ],
+});
 
 // Store recent alerts to prevent duplicates (hex: timestamp)
 const recentAlerts = {};
 
 // Track which extra aircraft are currently online
 const extraAircraftOnline = {};
+
+// Store current aircraft data for commands
+const aircraftData = {
+  '7500': [],
+  '7700': [],
+  'extra': {},
+};
 
 /**
  * Determine alert type and title based on squawk code
@@ -72,97 +88,50 @@ function formatAircraftData(aircraft) {
  * Create Discord embed for emergency alerts
  */
 function createEmergencyEmbed(title, aircraftData) {
-  const timestamp = new Date().toISOString();
-  
-  return {
-    embeds: [
+  return new EmbedBuilder()
+    .setTitle(title)
+    .setDescription('Aircraft emergency detected!')
+    .setColor(0xFF0000) // Red for alerts
+    .addFields(
+      { name: 'Flight Number', value: aircraftData.flight, inline: false },
+      { name: 'Tail Number', value: aircraftData.tail, inline: true },
+      { name: 'Aircraft Type', value: aircraftData.type, inline: true },
+      { name: 'Hex ID', value: aircraftData.hex, inline: true },
       {
-        title: title,
-        description: 'Aircraft emergency detected!',
-        color: 0xff0000, // Red for alerts
-        fields: [
-          {
-            name: 'Flight Number',
-            value: aircraftData.flight,
-            inline: false,
-          },
-          {
-            name: 'Tail Number',
-            value: aircraftData.tail,
-            inline: true,
-          },
-          {
-            name: 'Aircraft Type',
-            value: aircraftData.type,
-            inline: true,
-          },
-          {
-            name: 'Hex ID',
-            value: aircraftData.hex,
-            inline: true,
-          },
-          {
-            name: 'TRACK IT',
-            value: `[ADS-B Exchange](https://globe.adsbexchange.com/?icao=${aircraftData.hex.toLowerCase()})`,
-            inline: false,
-          },
-        ],
-        timestamp: timestamp,
-      },
-    ],
-    content: '@everyone',
-  };
+        name: 'TRACK IT',
+        value: `[ADS-B Exchange](https://globe.adsbexchange.com/?icao=${aircraftData.hex.toLowerCase()})`,
+        inline: false,
+      }
+    )
+    .setTimestamp();
 }
 
 /**
  * Create Discord embed for extra tracked aircraft
  */
 function createExtraAircraftEmbed(aircraftData) {
-  const timestamp = new Date().toISOString();
-  const fields = [];
-  
+  const embed = new EmbedBuilder()
+    .setTitle('AIRCRAFT ONLINE')
+    .setDescription('Tracked aircraft is now online!')
+    .setColor(0x00FF00); // Green for online
+
   if (aircraftData.flight !== 'N/A') {
-    fields.push({
-      name: 'Flight Number',
-      value: aircraftData.flight,
-      inline: false,
-    });
+    embed.addFields({ name: 'Flight Number', value: aircraftData.flight, inline: false });
   }
-  
-  fields.push(
-    {
-      name: 'Tail Number',
-      value: aircraftData.tail,
-      inline: true,
-    },
-    {
-      name: 'Aircraft Type',
-      value: aircraftData.type,
-      inline: true,
-    },
-    {
-      name: 'Hex ID',
-      value: aircraftData.hex,
-      inline: true,
-    },
+
+  embed.addFields(
+    { name: 'Tail Number', value: aircraftData.tail, inline: true },
+    { name: 'Aircraft Type', value: aircraftData.type, inline: true },
+    { name: 'Hex ID', value: aircraftData.hex, inline: true },
     {
       name: 'TRACK IT',
       value: `[ADS-B Exchange](https://globe.adsbexchange.com/?icao=${aircraftData.hex.toLowerCase()})`,
       inline: false,
     }
   );
-  
-  return {
-    embeds: [
-      {
-        title: 'AIRCRAFT ONLINE',
-        description: 'Tracked aircraft is now online!',
-        color: 0x00ff00, // Green for online
-        fields: fields,
-        timestamp: timestamp,
-      },
-    ],
-  };
+
+  embed.setTimestamp();
+  return embed;
 }
 
 /**
@@ -184,14 +153,44 @@ async function postToDiscord(squawkCode, aircraft) {
     return;
   }
   
-  const aircraftData = formatAircraftData(aircraft);
-  const payload = createEmergencyEmbed(squawkType.title, aircraftData);
+  const aircraftDataFormatted = formatAircraftData(aircraft);
+  const embed = createEmergencyEmbed(squawkType.title, aircraftDataFormatted);
   
   try {
-    await axios.post(webhookUrl, payload);
-    console.log(`[INFO] Alert posted for ${aircraftData.hex} (${squawkCode}) - ${aircraftData.flight}`);
+    await axios.post(webhookUrl, {
+      content: '@everyone',
+      embeds: [embed.toJSON()],
+    });
+    console.log(`[INFO] Alert posted for ${aircraftDataFormatted.hex} (${squawkCode}) - ${aircraftDataFormatted.flight}`);
   } catch (error) {
     console.error(`[ERROR] Failed to post alert to Discord: ${error.message}`);
+  }
+}
+
+/**
+ * Send aircraft data to custom API endpoints
+ */
+async function sendToCustomApis(data) {
+  if (config.CUSTOM_API_ENDPOINTS.length === 0) return;
+  
+  for (const endpoint of config.CUSTOM_API_ENDPOINTS) {
+    try {
+      const payload = {
+        timestamp: new Date().toISOString(),
+        ...data,
+      };
+      
+      await axios.post(endpoint, payload, {
+        timeout: 5000,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      console.log(`[INFO] Data sent to API: ${endpoint}`);
+    } catch (error) {
+      console.error(`[ERROR] Failed to send data to ${endpoint}: ${error.message}`);
+    }
   }
 }
 
@@ -205,6 +204,12 @@ async function fetchADSBData(squawkCode) {
     
     const response = await axios.get(endpoint, { timeout: 10000 });
     const aircraftList = response.data.ac || [];
+    
+    // Store for commands
+    aircraftData[squawkCode] = aircraftList;
+    
+    // Send to custom APIs
+    await sendToCustomApis({ type: squawkCode, data: response.data });
     
     console.log(`[INFO] Fetched ${aircraftList.length} aircraft with squawk ${squawkCode}`);
     return aircraftList;
@@ -221,6 +226,10 @@ async function fetchAllAircraft() {
   try {
     const endpoint = config.ADSB_API_ENDPOINTS.all;
     const response = await axios.get(endpoint, { timeout: 10000 });
+    
+    // Send to custom APIs
+    await sendToCustomApis({ type: 'all', data: response.data });
+    
     return response.data.ac || [];
   } catch (error) {
     console.error(`[ERROR] Failed to fetch all aircraft data: ${error.message}`);
@@ -233,11 +242,13 @@ async function fetchAllAircraft() {
  */
 async function postExtraAircraftAlert(hexId, aircraft, webhookUrl) {
   try {
-    const aircraftData = formatAircraftData(aircraft);
-    const payload = createExtraAircraftEmbed(aircraftData);
+    const aircraftDataFormatted = formatAircraftData(aircraft);
+    const embed = createExtraAircraftEmbed(aircraftDataFormatted);
     
-    await axios.post(webhookUrl, payload);
-    console.log(`[INFO] Extra aircraft alert posted for ${hexId} - ${aircraftData.flight}`);
+    await axios.post(webhookUrl, {
+      embeds: [embed.toJSON()],
+    });
+    console.log(`[INFO] Extra aircraft alert posted for ${hexId} - ${aircraftDataFormatted.flight}`);
   } catch (error) {
     console.error(`[ERROR] Failed to post extra aircraft alert: ${error.message}`);
   }
@@ -257,19 +268,22 @@ async function checkExtraTrackedAircraft() {
       .map((a) => a.hex.toLowerCase())
   );
   
+  // Store extra aircraft data
+  aircraftData.extra = {};
+  
   // Check each tracked aircraft
   for (const [hexId, webhookUrl] of Object.entries(trackedAircraft)) {
     const hexIdLower = hexId.toLowerCase();
     
     if (onlineHexes.has(hexIdLower)) {
       // Aircraft is online
-      if (!(hexIdLower in extraAircraftOnline)) {
-        // Aircraft just came online - post alert
-        console.log(`[INFO] Extra tracked aircraft ${hexId} came online`);
+      const aircraft = aircraftList.find((a) => a.hex && a.hex.toLowerCase() === hexIdLower);
+      if (aircraft) {
+        aircraftData.extra[hexId] = aircraft;
         
-        // Find the aircraft data
-        const aircraft = aircraftList.find((a) => a.hex && a.hex.toLowerCase() === hexIdLower);
-        if (aircraft) {
+        if (!(hexIdLower in extraAircraftOnline)) {
+          // Aircraft just came online - post alert
+          console.log(`[INFO] Extra tracked aircraft ${hexId} came online`);
           await postExtraAircraftAlert(hexId, aircraft, webhookUrl);
           extraAircraftOnline[hexIdLower] = true;
         }
@@ -286,17 +300,149 @@ async function checkExtraTrackedAircraft() {
 }
 
 /**
+ * Format aircraft list as a Discord table-like message
+ */
+function formatAircraftTable(aircraft, title) {
+  if (aircraft.length === 0) {
+    return `**${title}**\nNo aircraft currently detected.`;
+  }
+  
+  const maxItems = 20; // Discord limit
+  const items = aircraft.slice(0, maxItems);
+  
+  let table = `**${title}** (${aircraft.length} total)\n\`\`\`\n`;
+  table += 'Flight      | Tail     | Type  | Hex ID\n';
+  table += '----------- | -------- | ----- | ---------\n';
+  
+  for (const plane of items) {
+    const formatted = formatAircraftData(plane);
+    const flight = formatted.flight.padEnd(11);
+    const tail = formatted.tail.padEnd(8);
+    const type = formatted.type.padEnd(5);
+    const hex = formatted.hex;
+    
+    table += `${flight} | ${tail} | ${type} | ${hex}\n`;
+  }
+  
+  table += '```';
+  
+  if (aircraft.length > maxItems) {
+    table += `\n*...and ${aircraft.length - maxItems} more aircraft*`;
+  }
+  
+  return table;
+}
+
+// Discord Bot Events
+client.once('ready', () => {
+  console.log(`[INFO] Discord bot logged in as ${client.user.tag}`);
+  console.log(`[INFO] Monitoring ${Object.keys(config.EXTRA_TRACKED_AIRCRAFT).length} extra aircraft`);
+});
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  try {
+    if (interaction.commandName === '7500') {
+      const table = formatAircraftTable(aircraftData['7500'], '🚨 HIJACK ALERTS (7500)');
+      await interaction.reply({ content: table, ephemeral: false });
+    } else if (interaction.commandName === '7700') {
+      const table = formatAircraftTable(aircraftData['7700'], '🆘 EMERGENCY ALERTS (7700)');
+      await interaction.reply({ content: table, ephemeral: false });
+    } else if (interaction.commandName === 'trackall') {
+      const embed = new EmbedBuilder()
+        .setTitle('📊 ALL TRACKED AIRCRAFT')
+        .setColor(0x0099FF)
+        .setTimestamp();
+
+      let description = '';
+      
+      // Add 7500 hijacks
+      const hijacks = aircraftData['7500'].length;
+      description += `**🚨 Hijack Alerts (7500):** ${hijacks} aircraft\n`;
+      
+      // Add 7700 emergencies
+      const emergencies = aircraftData['7700'].length;
+      description += `**🆘 Emergency Alerts (7700):** ${emergencies} aircraft\n`;
+      
+      // Add extra tracked
+      const extraCount = Object.keys(aircraftData.extra).length;
+      description += `**✈️ Extra Tracked:** ${extraCount} aircraft online\n`;
+      
+      embed.setDescription(description);
+      
+      // Add field for extra tracked aircraft details
+      if (Object.keys(aircraftData.extra).length > 0) {
+        let extraText = '';
+        for (const [hex, plane] of Object.entries(aircraftData.extra)) {
+          const formatted = formatAircraftData(plane);
+          extraText += `**${hex.toUpperCase()}** - ${formatted.flight} (${formatted.tail})\n`;
+        }
+        embed.addFields({ name: 'Online', value: extraText || 'None', inline: false });
+      }
+      
+      await interaction.reply({ embeds: [embed], ephemeral: false });
+    }
+  } catch (error) {
+    console.error(`[ERROR] Command error: ${error.message}`);
+    await interaction.reply({ content: 'Error executing command', ephemeral: true });
+  }
+});
+
+/**
+ * Register slash commands
+ */
+async function registerCommands() {
+  try {
+    const commands = [
+      new SlashCommandBuilder()
+        .setName('7500')
+        .setDescription('View all current HIJACK aircraft alerts (7500 squawk code)'),
+      new SlashCommandBuilder()
+        .setName('7700')
+        .setDescription('View all current EMERGENCY aircraft alerts (7700 squawk code)'),
+      new SlashCommandBuilder()
+        .setName('trackall')
+        .setDescription('View all tracked aircraft (7500, 7700, and extra tracked)'),
+    ];
+
+    await client.application.commands.set(commands);
+    console.log('[INFO] Slash commands registered successfully');
+  } catch (error) {
+    console.error(`[ERROR] Failed to register commands: ${error.message}`);
+  }
+}
+
+/**
  * Main bot loop
  */
 async function main() {
-  console.log('[INFO] FlightAlert Discord Bot started');
+  console.log('[INFO] FlightAlert Discord Bot starting...');
+  
+  // Check for Discord token
+  if (!config.DISCORD_TOKEN) {
+    console.error('[ERROR] DISCORD_TOKEN not found in .env file');
+    process.exit(1);
+  }
+  
+  // Login to Discord
+  try {
+    await client.login(config.DISCORD_TOKEN);
+  } catch (error) {
+    console.error(`[ERROR] Failed to login to Discord: ${error.message}`);
+    process.exit(1);
+  }
+  
+  // Wait for bot to be ready
+  await new Promise((resolve) => {
+    client.once('ready', resolve);
+  });
+
+  // Register slash commands
+  await registerCommands();
+
   console.log(`[INFO] Poll interval: ${config.POLL_INTERVAL} seconds`);
   console.log(`[INFO] Duplicate alert window: ${config.DUPLICATE_ALERT_WINDOW} seconds`);
-  
-  const trackedAircraft = config.EXTRA_TRACKED_AIRCRAFT;
-  if (Object.keys(trackedAircraft).length > 0) {
-    console.log(`[INFO] Tracking ${Object.keys(trackedAircraft).length} extra aircraft: ${Object.keys(trackedAircraft).join(', ')}`);
-  }
   
   // Main polling loop
   while (true) {
@@ -329,11 +475,13 @@ async function main() {
 // Handle graceful shutdown
 process.on('SIGINT', () => {
   console.log('[INFO] Bot stopped by user');
+  client.destroy();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   console.log('[INFO] Bot terminated');
+  client.destroy();
   process.exit(0);
 });
 
