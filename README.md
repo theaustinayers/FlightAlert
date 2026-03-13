@@ -21,7 +21,8 @@ A Discord bot that monitors live ADSB aircraft data for emergency signals and tr
 
 ## Requirements
 
-- Python 3.7+
+- Node.js 14.0+
+- npm (Node Package Manager)
 - Internet connection to access ADSB API and Discord webhooks
 
 ## Installation
@@ -29,20 +30,20 @@ A Discord bot that monitors live ADSB aircraft data for emergency signals and tr
 1. Clone or download the repository
 2. Install dependencies:
    ```bash
-   pip install -r requirements.txt
+   npm install
    ```
 
 ## Configuration
 
-### Main Alerts (config.py)
+### Main Alerts (config.js)
 
-Edit `config.py` to set up your Discord webhooks for hijack and emergency alerts:
+Edit `config.js` to set up your Discord webhooks for hijack and emergency alerts:
 
-```python
-WEBHOOKS = {
-    '7500': 'YOUR_7500_WEBHOOK_URL',  # Hijack alerts
-    '7700': 'YOUR_7700_WEBHOOK_URL',  # Emergency alerts
-}
+```javascript
+const WEBHOOKS = {
+  '7500': 'YOUR_7500_WEBHOOK_URL',  // Hijack alerts
+  '7700': 'YOUR_7700_WEBHOOK_URL',  // Emergency alerts
+};
 ```
 
 ### Settings
@@ -67,7 +68,12 @@ When a tracked aircraft comes online, the bot will post to its webhook. When it 
 
 Run the bot:
 ```bash
-python bot.py
+npm start
+```
+
+Or directly:
+```bash
+node bot.js
 ```
 
 The bot will:
@@ -94,7 +100,7 @@ This bot uses live ADS-B data from:
 
 2. Copy the webhook URLs
 
-3. Paste them in `config.py` for main alerts, or in `extra.conf` for extra aircraft tracking
+3. Paste them in `config.js` for main alerts, or in `extra.conf` for extra aircraft tracking
 
 ### Getting a Discord Webhook URL
 
@@ -130,11 +136,22 @@ The bot logs all activities including:
 
 To deploy on a Pterodactyl Panel:
 
-1. Create a new server with Python 3.9+ image
+1. Create a new server with **Node.js 18+** Docker image
 2. Upload the bot files to the server
-3. Install dependencies: `pip install -r requirements.txt`
-4. Set the startup command: `python bot.py`
-5. Configure webhooks in `config.py` and `extra.conf` before starting
+3. Set the startup command: `npm start`
+4. In the console, install dependencies: `npm install`
+5. Configure webhooks in `config.js` and `extra.conf` before starting
+
+## Project Structure
+
+```
+FlightAlert/
+├── bot.js           # Main bot logic
+├── config.js        # Configuration (webhooks, API endpoints)
+├── extra.conf       # Extra aircraft tracking configuration
+├── package.json     # Node.js dependencies
+└── README.md        # This file
+```
 
 ## License
 
