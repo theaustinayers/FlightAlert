@@ -15,7 +15,6 @@ const WEBHOOKS = {
 const ADSB_API_ENDPOINTS = {
   '7500': 'https://api.adsb.lol/v2/sqk/7500',
   '7700': 'https://api.adsb.lol/v2/sqk/7700',
-  'all': 'https://api.adsb.lol/v2/aircraft',
 };
 
 // Poll interval in seconds

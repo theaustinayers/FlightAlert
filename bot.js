@@ -224,19 +224,19 @@ async function fetchADSBData(squawkCode) {
 }
 
 /**
- * Fetch all aircraft data from ADSB API
+ * Fetch aircraft data by hex code from ADSB API
  */
-async function fetchAllAircraft() {
+async function fetchAircraftByHex(hex) {
   try {
-    const endpoint = config.ADSB_API_ENDPOINTS.all;
+    const endpoint = `https://api.adsb.lol/v2/hex/${hex}`;
     const response = await axios.get(endpoint, { timeout: 10000 });
     
     // Send to custom APIs
-    await sendToCustomApis({ type: 'all', data: response.data });
+    await sendToCustomApis({ type: 'hex', hex, data: response.data });
     
     return response.data.ac || [];
   } catch (error) {
-    console.error(`[ERROR] Failed to fetch all aircraft data: ${error.message}`);
+    console.error(`[ERROR] Failed to fetch aircraft by hex ${hex}: ${error.message}`);
     return [];
   }
 }
@@ -306,8 +306,8 @@ async function checkExtraTrackedAircraft() {
     // Fetch aircraft based on type
     let aircraftList = [];
     if (trackType === 'hex') {
-      // For HEX, search through all aircraft
-      aircraftList = await fetchAllAircraft();
+      // For HEX, use dedicated hex endpoint
+      aircraftList = await fetchAircraftByHex(identifier);
     } else {
       // For REG, use dedicated API endpoint
       aircraftList = await fetchAircraftByRegistration(identifier);
@@ -317,14 +317,8 @@ async function checkExtraTrackedAircraft() {
     let matchedAircraft = null;
     const identifierLower = identifier.toLowerCase();
     
-    if (trackType === 'hex') {
-      // Search by HEX code
-      matchedAircraft = aircraftList.find((a) => a.hex && a.hex.toLowerCase() === identifierLower);
-    } else {
-      // For registration, the API returns directly, so use first result
-      if (aircraftList.length > 0) {
-        matchedAircraft = aircraftList[0];
-      }
+    if (aircraftList.length > 0) {
+      matchedAircraft = aircraftList[0];
     }
     
     if (matchedAircraft) {
