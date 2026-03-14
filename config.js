@@ -41,7 +41,13 @@ function loadExtraConfig() {
       return;
     }
     
-    const content = fs.readFileSync(configPath, 'utf8');
+    const rawContent = fs.readFileSync(configPath, 'utf8');
+    
+    // Strip comment lines before parsing
+    const content = rawContent
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('#'))
+      .join('\n');
     
     // Find content between braces
     const start = content.indexOf('{');
