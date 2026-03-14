@@ -377,7 +377,7 @@ function formatAircraftTable(aircraft, title) {
 }
 
 // Discord Bot Events
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`[INFO] Discord bot logged in as ${client.user.tag}`);
   console.log(`[INFO] Monitoring ${Object.keys(config.EXTRA_TRACKED_AIRCRAFT).length} extra aircraft`);
 });
@@ -748,7 +748,7 @@ async function main() {
   
   // Wait for bot to be ready
   await new Promise((resolve) => {
-    client.once('ready', resolve);
+    client.once('clientReady', resolve);
   });
 
   // Register slash commands
@@ -756,6 +756,17 @@ async function main() {
 
   console.log(`[INFO] Poll interval: ${config.POLL_INTERVAL} seconds`);
   console.log(`[INFO] Duplicate alert window: ${config.DUPLICATE_ALERT_WINDOW} seconds`);
+  
+  // Reload extra.conf every 5 seconds
+  const EXTRA_CONF_RELOAD_INTERVAL = 5000;
+  setInterval(() => {
+    const prevCount = Object.keys(config.EXTRA_TRACKED_AIRCRAFT).length;
+    config.loadExtraConfig();
+    const newCount = Object.keys(config.EXTRA_TRACKED_AIRCRAFT).length;
+    if (prevCount !== newCount) {
+      console.log(`[INFO] extra.conf reloaded: now monitoring ${newCount} extra aircraft (was ${prevCount})`);
+    }
+  }, EXTRA_CONF_RELOAD_INTERVAL);
   
   // Main polling loop
   while (true) {
