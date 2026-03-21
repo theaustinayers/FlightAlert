@@ -23,6 +23,9 @@ const POLL_INTERVAL = 10;
 // Time window to prevent duplicate alerts (in seconds)
 const DUPLICATE_ALERT_WINDOW = 3600; // 60 minutes
 
+// Squawk confirmation delay in seconds (aircraft must hold 7500/7700 for this long before alerting)
+const SQUAWK_CONFIRMATION_DELAY = 30;
+
 // Load extra tracked aircraft from extra.conf
 let EXTRA_TRACKED_AIRCRAFT = {};
 
@@ -197,6 +200,7 @@ module.exports = {
   ADSB_API_ENDPOINTS,
   POLL_INTERVAL,
   DUPLICATE_ALERT_WINDOW,
+  SQUAWK_CONFIRMATION_DELAY,
   EXTRA_TRACKED_AIRCRAFT,
   CUSTOM_API_ENDPOINTS,
   ADMIN_ROLES,

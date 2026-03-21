@@ -18,6 +18,9 @@ const client = new Client({
 // Store recent alerts to prevent duplicates (hex: timestamp)
 const recentAlerts = {};
 
+// Track pending squawk alerts awaiting confirmation (hex_squawk: firstSeenTimestamp)
+const pendingSquawkAlerts = {};
+
 // Track which extra aircraft are currently online
 const extraAircraftOnline = {};
 
@@ -73,6 +76,28 @@ function cleanOldAlerts() {
 }
 
 /**
+ * Fetch aircraft photo URL from PlaneSpotters API
+ */
+async function fetchAircraftPhoto(hex) {
+  try {
+    const endpoint = `https://api.planespotters.net/pub/photos/hex/${hex.toUpperCase()}`;
+    const response = await axios.get(endpoint, { timeout: 5000 });
+    
+    if (response.data && response.data.photos && response.data.photos.length > 0) {
+      const photo = response.data.photos[0];
+      const url = photo.thumbnail_large ? photo.thumbnail_large.src : (photo.thumbnail ? photo.thumbnail.src : null);
+      if (url) {
+        console.log(`[INFO] Found aircraft photo for ${hex}`);
+        return url;
+      }
+    }
+  } catch (error) {
+    console.log(`[INFO] No photo found for ${hex}: ${error.message}`);
+  }
+  return null;
+}
+
+/**
  * Format aircraft data for Discord embed
  */
 function formatAircraftData(aircraft) {
@@ -87,8 +112,8 @@ function formatAircraftData(aircraft) {
 /**
  * Create Discord embed for emergency alerts
  */
-function createEmergencyEmbed(title, aircraftData) {
-  return new EmbedBuilder()
+function createEmergencyEmbed(title, aircraftData, photoUrl) {
+  const embed = new EmbedBuilder()
     .setTitle(title)
     .setDescription('Aircraft emergency detected!')
     .setColor(0xFF0000) // Red for alerts
@@ -104,12 +129,18 @@ function createEmergencyEmbed(title, aircraftData) {
       }
     )
     .setTimestamp();
+
+  if (photoUrl) {
+    embed.setImage(photoUrl);
+  }
+
+  return embed;
 }
 
 /**
  * Create Discord embed for extra tracked aircraft
  */
-function createExtraAircraftEmbed(aircraftData, comment) {
+function createExtraAircraftEmbed(aircraftData, comment, photoUrl) {
   const embed = new EmbedBuilder()
     .setTitle('AIRCRAFT ONLINE')
     .setDescription('Tracked aircraft is now online!')
@@ -133,6 +164,10 @@ function createExtraAircraftEmbed(aircraftData, comment) {
       inline: false,
     }
   );
+
+  if (photoUrl) {
+    embed.setImage(photoUrl);
+  }
 
   embed.setTimestamp();
   return embed;
@@ -158,7 +193,8 @@ async function postToDiscord(squawkCode, aircraft) {
   }
   
   const aircraftDataFormatted = formatAircraftData(aircraft);
-  const embed = createEmergencyEmbed(squawkType.title, aircraftDataFormatted);
+  const photoUrl = await fetchAircraftPhoto(aircraftDataFormatted.hex);
+  const embed = createEmergencyEmbed(squawkType.title, aircraftDataFormatted, photoUrl);
   
   try {
     await axios.post(webhookUrl, {
@@ -262,7 +298,8 @@ async function fetchAircraftByRegistration(registration) {
 async function postExtraAircraftAlert(hexId, aircraft, webhookUrl, comment) {
   try {
     const aircraftDataFormatted = formatAircraftData(aircraft);
-    const embed = createExtraAircraftEmbed(aircraftDataFormatted, comment);
+    const photoUrl = await fetchAircraftPhoto(aircraftDataFormatted.hex);
+    const embed = createExtraAircraftEmbed(aircraftDataFormatted, comment, photoUrl);
     
     await axios.post(webhookUrl, {
       embeds: [embed.toJSON()],
@@ -771,12 +808,37 @@ async function main() {
   // Main polling loop
   while (true) {
     try {
-      // Check both squawk codes
+      // Check both squawk codes with confirmation delay
       for (const squawkCode of ['7500', '7700']) {
         const aircraftList = await fetchADSBData(squawkCode);
         
+        // Build a set of currently active hex IDs for this squawk code
+        const activeHexes = new Set(aircraftList.map((ac) => `${ac.hex}_${squawkCode}`));
+        
         for (const aircraft of aircraftList) {
-          await postToDiscord(squawkCode, aircraft);
+          const alertKey = `${aircraft.hex}_${squawkCode}`;
+          
+          if (!(alertKey in pendingSquawkAlerts)) {
+            // First time seeing this aircraft with this squawk - start the timer
+            pendingSquawkAlerts[alertKey] = Date.now();
+            console.log(`[INFO] Squawk ${squawkCode} detected for ${aircraft.hex} - waiting ${config.SQUAWK_CONFIRMATION_DELAY}s to confirm`);
+          } else {
+            // Aircraft seen before - check if confirmation delay has passed
+            const elapsed = (Date.now() - pendingSquawkAlerts[alertKey]) / 1000;
+            if (elapsed >= config.SQUAWK_CONFIRMATION_DELAY) {
+              await postToDiscord(squawkCode, aircraft);
+              // Remove from pending after alert is processed (duplicate check handles re-alerts)
+              delete pendingSquawkAlerts[alertKey];
+            }
+          }
+        }
+        
+        // Clean up pending alerts for aircraft no longer squawking this code
+        for (const key of Object.keys(pendingSquawkAlerts)) {
+          if (key.endsWith(`_${squawkCode}`) && !activeHexes.has(key)) {
+            console.log(`[INFO] Aircraft ${key} no longer squawking ${squawkCode} - cancelled pending alert`);
+            delete pendingSquawkAlerts[key];
+          }
         }
       }
       
